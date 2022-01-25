@@ -8,9 +8,15 @@ import asyncio
 import string
 from captcha.image import ImageCaptcha
 import pyrebase
+import requests
+from discord import Webhook, RequestsWebhookAdapter
+from flask import Flask
+from threading import Thread
+
 
 #secret variables
 discordToken = os.environ['discordToken']
+logsWebhook = os.environ['logsWebhookURL']
 
 #firebase secret vars
 fapiKey = os.environ['fapiKey']
@@ -21,9 +27,6 @@ fstorageBucket = os.environ['fstorageBucket']
 fmsgSenderId = os.environ['fmsgSenderId']
 fappId = os.environ['fappId']
 measureId = os.environ['measureId']
-
-from flask import Flask
-from threading import Thread
 
 app = Flask('')
 
@@ -58,7 +61,7 @@ firebase = pyrebase.initialize_app(config)
 
 db = firebase.database()
 
-client = commands.Bot(command_prefix = '$')
+client = commands.Bot(command_prefix = '$', help_command=None)
 
 @client.event
 async def on_ready():
@@ -66,8 +69,15 @@ async def on_ready():
   await client.change_presence(activity=discord.Game(name="$help"))
 
 #Delete user messages in verify channel
+#muted
 @client.event
 async def on_message(message):
+    ctx = await client.get_context(message)
+
+    if ctx.valid:
+      webhook = Webhook.from_url(logsWebhook, adapter=RequestsWebhookAdapter())
+      webhook.send(f'{message.author} sent: {message.content}')
+
     await client.process_commands(message)
 
     #Check if message was sent by bot, if yes return
@@ -84,6 +94,61 @@ async def on_message(message):
         await message.delete()
     except:
       print("verify channel does not exist")
+
+    role = discord.utils.get(message.guild.roles, name="visually muted")
+    if role in message.author.roles:
+        await message.delete()
+    else:
+      return
+
+@client.command()
+async def help(ctx):
+
+  embedVar = discord.Embed(title="Commands", description="The commands. Prefix: `$`", color=0x00ff00)
+  embedVar.add_field(name="$help", value="Aids you with commands. Syntax: `$help`", inline=False)
+  embedVar.add_field(name="$setup", value="setup something. Type `$setup help` for more info. Syntax: `$setup <thing to setup>", inline=False)
+  embedVar.add_field(name="$mute", value="mute an annoying user. Syntax: `$mute <user> <reason>`", inline=False)
+  embedVar.add_field(name="$unmute", value="unmute an annoying user and regret it. Syntax: `$unmute <user> <reason>`", inline=False)
+  embedVar.add_field(name="$ban", value="Swing your ban hammer at someone Syntax: `$ban <user> <reason>`", inline=False)
+  embedVar.add_field(name="$unban", value="Forgive one of your enemies then and regret it. Syntax: `$unban <user>`", inline=False)
+  embedVar.add_field(name="$kick", value="Throw someone out of your server. Syntax: `$kick <user> <reason>`", inline=False)
+  embedVar.add_field(name="$say", value="Make me say something. Syntax: `$say <thing to say>`", inline=False)
+  embedVar.add_field(name="$hello", value="Make me greet you. Syntax: `$hello`", inline=False)
+  embedVar.add_field(name="$verify", value="Verify that you are indeed human. The admin must first setup verify with `$setup verify`. Syntax: `$verify`", inline=False)
+  embedVar.add_field(name="NOTE", value="ALL commands used would be logged into another server. By using this bot, you consent every single command you use to be logged onto another server for moderation purposes. Unless its necessary, the logs would not be shared publicly.", inline=False)
+  await ctx.send(embed=embedVar)
+
+
+@client.command(pass_context=True)
+@commands.has_role('staff')
+async def mute(ctx, member: discord.Member, *, reason=None):
+  var = discord.utils.get(ctx.guild.roles, name = "visually muted")
+  await member.add_roles(var)
+  await ctx.send(f'{member} has been muted')
+
+@mute.error
+async def mute_error(ctx, error):
+  if isinstance(error, commands.MissingRole):
+    await ctx.send("You are not strong enough to mute people LOL")
+  else:
+    await ctx.send("An unknown error occured")
+
+@client.command(pass_context=True)
+@commands.has_role('staff')
+async def unmute(ctx, member: discord.Member, *, reason=None):
+  try:
+    role = discord.utils.get(ctx.guild.roles, name = "visually muted")
+    await member.remove_roles(role)
+    await ctx.send(f'{member} has been unmuted')
+  except:
+    ctx.send(f'{member} is not muted')
+
+@unmute.error
+async def unmute_error(ctx, error):
+  if isinstance(error, commands.MissingRole):
+    await ctx.send("You are not strong enough to unmute people LOL")
+  else:
+    await ctx.send("An unknown error occured")
 
 @client.command(pass_context=True)
 async def verify(ctx):
@@ -116,12 +181,19 @@ async def hello(ctx):
   return
 
 @client.command()
-async def say(ctx, thingToSay):
-  await ctx.send(thingToSay)
+async def say(ctx, *thingToSay):
+  thingToSayFormatted = ''
+  for i in thingToSay:
+    if thingToSayFormatted == '':
+      thingToSayFormatted = i
+    else:
+      thingToSayFormatted = thingToSayFormatted + " " + i
+
+  await ctx.send(thingToSayFormatted)
   await ctx.message.delete()
 
 @client.command()
-@has_permissions(kick_members=True)
+@commands.has_role('staff')
 async def kick(ctx, member: discord.Member, *, reason=None):
   await member.kick(reason=reason)
   await ctx.send(f'User {member} has been thrown out of the server')
@@ -169,6 +241,14 @@ async def unban_error(ctx, error):
   if isinstance(error, commands.MissingPermissions):
     await ctx.send("LOL imagine not having perms to unban someone... Imagine")
 
+@client.command(pass_context=True)
+@commands.has_role('staff')
+async def delete(ctx, id):
+  await ctx.message.delete()
+  msg = await ctx.fetch_message(id)
+  await msg.delete()
+  await ctx.author.send(f'message id: {id} has been deleted')
+  
 #setups
 @client.command(pass_context=True)
 async def setup(ctx, setupChoice):
@@ -183,5 +263,23 @@ async def setup(ctx, setupChoice):
     await guild.create_role(name="isHuman")
 
     await ctx.send("Verify Has Been Setup")
+  
+  if str(setupChoice) == "mute":
+    guild = ctx.guild
+    await guild.create_role(name="visually muted")
+    await ctx.send("Mute has been setup!")
+  
+  if str(setupChoice) == "perms":
+    guild = ctx.guild
+    await guild.create_role(name="staff")
+    await ctx.send("Permissions have been setup! Add the staff role to anyone who is a mod")
+  
+  if str(setupChoice) == "help":
+    setuphelpembed = discord.Embed(title="Setup command", description="Syntax: `$setup <thing to setup>`", color=0x00ff00)
+    setuphelpembed.add_field(name="$setup verify", value="Setup verification. Syntax: `$setup verify`", inline=False)
+    setuphelpembed.add_field(name="$setup mute", value="Setup a system to make people shut up Syntax: `$setup mute`", inline=False)
+    setuphelpembed.add_field(name="$setup perms", value="Setup permissions. You must do this if you want to be able to mute people. Syntax: `$setup perms`", inline=False)
+    await ctx.send(embed=setuphelpembed)
+
   
 client.run(discordToken)
